@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HIIT Timer</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      <strong>HIIT Timer</strong>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h1>Configuração</h1>
+      <p class="muted">Defina aquecimento, rounds e intervalos. Depois clique em Iniciar.</p>
+
+      <div class="grid">
+        <div class="field">
+          <label for="warmup">Aquecimento (seg)</label>
+          <input id="warmup" type="number" min="0" value="60" />
+        </div>
+
+        <div class="field">
+          <label for="rounds">Número de circuitos (rounds)</label>
+          <input id="rounds" type="number" min="1" value="20" />
+        </div>
+
+        <div class="field">
+          <label for="work">Trabalho (seg)</label>
+          <input id="work" type="number" min="1" value="40" />
+        </div>
+
+        <div class="field">
+          <label for="rest1">Intervalo 1 (seg) — curto</label>
+          <input id="rest1" type="number" min="0" value="20" />
+        </div>
+
+        <div class="field">
+          <label for="rest2">Intervalo 2 (seg) — longo (a cada N rounds)</label>
+          <input id="rest2" type="number" min="0" value="60" />
+        </div>
+
+        <div class="field">
+          <label for="rest2Every">Aplicar intervalo 2 a cada quantos rounds?</label>
+          <input id="rest2Every" type="number" min="0" value="0" />
+          <small class="hint">Use 0 para desativar (sem intervalo longo).</small>
+        </div>
+
+        <div class="field">
+          <label for="cooldown">Término / Cooldown (seg)</label>
+          <input id="cooldown" type="number" min="0" value="60" />
+        </div>
+
+        <div class="field inline">
+          <label class="chk">
+            <input id="sound" type="checkbox" checked />
+            Som (beep)
+          </label>
+          <label class="chk">
+            <input id="vibrate" type="checkbox" checked />
+            Vibração
+          </label>
+        </div>
+      </div>
+
+      <div class="row">
+        <button id="btnStart" class="btn primary">Iniciar</button>
+        <button id="btnPause" class="btn" disabled>Pausar</button>
+        <button id="btnReset" class="btn danger" disabled>Resetar</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Status</h2>
+      <div class="status">
+        <div>
+          <div class="label">Fase</div>
+          <div id="phase" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Round</div>
+          <div id="round" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Tempo</div>
+          <div id="time" class="timer">00:00</div>
+        </div>
+      </div>
+
+      <div class="bar">
+        <div id="barFill" class="bar__fill" style="width:0%"></div>
+      </div>
+
+      <p id="next" class="muted" style="margin-top:10px;">—</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <small>Mobile-first • Local • Sem login</small>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>
