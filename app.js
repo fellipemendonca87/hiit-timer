@@ -1,12 +1,4 @@
-Prospero, aqui é o Wall. Abaixo está o **app.js completo** já com as alterações pedidas:
-
-✅ Timer continua “correndo” mesmo saindo da página (sincroniza por timestamp ao voltar)
-✅ Pausa só quando você clicar Pausar (pausa real por timestamp)
-✅ Áudio mais alto e confiável no iPhone (AudioContext reutilizado + master gain + resume no Start)
-✅ Config “congelada” durante o treino (não muda se mexer nos inputs)
-✅ Inputs travados enquanto roda (evita bagunça durante execução)
-
-Copie e cole inteiro:
+alert("app.js carregou (versão nova)");
 
 ```js
 "use strict";
@@ -547,3 +539,4 @@ function loadConfig() {
   }
 }
 ```
+
