@@ -1,3 +1,14 @@
+Prospero, aqui é o Wall. Abaixo está o **app.js completo** já com as alterações pedidas:
+
+✅ Timer continua “correndo” mesmo saindo da página (sincroniza por timestamp ao voltar)
+✅ Pausa só quando você clicar Pausar (pausa real por timestamp)
+✅ Áudio mais alto e confiável no iPhone (AudioContext reutilizado + master gain + resume no Start)
+✅ Config “congelada” durante o treino (não muda se mexer nos inputs)
+✅ Inputs travados enquanto roda (evita bagunça durante execução)
+
+Copie e cole inteiro:
+
+```js
 "use strict";
 
 /*
@@ -5,6 +16,8 @@
   - Fases: WARMUP -> (WORK <-> REST1/REST2) -> COOLDOWN -> DONE
   - REST2 é opcional e pode acontecer a cada N rounds (rest2Every).
   - Persistência: salva config em localStorage.
+  - Timer robusto: usa timestamp (continua correto mesmo em background).
+  - Áudio robusto iPhone: reusa AudioContext + master gain + resume no Start.
 */
 
 const STORAGE_KEY = "hiit_config_v1";
@@ -33,6 +46,10 @@ const barFill = document.getElementById("barFill");
 // Timer state
 let timerId = null;
 let running = false;
+let paused = false;
+
+// Timestamp-based timing (robusto em background)
+let phaseEndAt = 0; // ms timestamp quando a fase atual termina
 
 // Sequence state
 let phase = "IDLE"; // IDLE, WARMUP, WORK, REST1, REST2, COOLDOWN, DONE
@@ -40,6 +57,34 @@ let totalRounds = 20;
 let currentRound = 0; // 1..totalRounds
 let remaining = 0; // seconds remaining in current phase
 let phaseDuration = 0; // seconds total for current phase (for progress bar)
+
+// Config congelada durante execução
+let cfgRun = null;
+
+// =========================
+// AUDIO (iPhone-friendly)
+// - Reusa 1 AudioContext
+// - Resume no Start (gesto do usuário)
+// - Volume mais alto e consistente
+// =========================
+let audioCtx = null;
+let masterGain = null;
+
+function initAudio() {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return;
+
+  if (!audioCtx) {
+    audioCtx = new AudioCtx();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.35; // VOLUME MASTER (0.25 a 0.60)
+    masterGain.connect(audioCtx.destination);
+  }
+
+  if (audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+}
 
 // Load saved config
 loadConfig();
@@ -50,9 +95,19 @@ btnStart.addEventListener("click", start);
 btnPause.addEventListener("click", togglePause);
 btnReset.addEventListener("click", resetAll);
 
+// Salva config somente quando NÃO está rodando (evita sujar config do treino)
 [
   elWarmup, elRounds, elWork, elRest1, elRest2, elRest2Every, elCooldown, elSound, elVibrate
-].forEach(el => el.addEventListener("change", saveConfig));
+].forEach(el => el.addEventListener("change", () => {
+  if (running) return;
+  saveConfig();
+}));
+
+function setInputsDisabled(disabled) {
+  [
+    elWarmup, elRounds, elWork, elRest1, elRest2, elRest2Every, elCooldown, elSound, elVibrate
+  ].forEach(el => { el.disabled = disabled; });
+}
 
 function start() {
   if (running) return;
@@ -63,13 +118,19 @@ function start() {
     return;
   }
 
-  applyConfig(cfg.value);
+  initAudio();       // garante áudio no iPhone (resume no gesto)
+  cfgRun = cfg.value; // congela config do treino
+  applyConfig(cfgRun);
+
+  setInputsDisabled(true);
 
   // inicia na fase WARMUP (se 0, pula direto para WORK)
-  phase = (cfg.value.warmup > 0) ? "WARMUP" : "WORK";
+  phase = (cfgRun.warmup > 0) ? "WARMUP" : "WORK";
   currentRound = 0;
 
+  paused = false;
   enterPhase(phase);
+
   setButtonsRunning(true);
   running = true;
 
@@ -79,45 +140,86 @@ function start() {
 function togglePause() {
   if (!running) return;
 
-  if (timerId) {
-    clearInterval(timerId);
-    timerId = null;
+  if (!paused) {
+    // pausar
+    paused = true;
+
+    if (timerId) {
+      clearInterval(timerId);
+      timerId = null;
+    }
+
+    // congela remaining baseado no tempo real
+    remaining = Math.max(0, Math.ceil((phaseEndAt - Date.now()) / 1000));
+
     btnPause.textContent = "Continuar";
     outNext.textContent = "Pausado.";
-  } else {
-    btnPause.textContent = "Pausar";
-    tickLoop();
+    render();
+    return;
   }
+
+  // continuar
+  paused = false;
+  btnPause.textContent = "Pausar";
+
+  // recalcula fim da fase a partir do remaining atual
+  phaseEndAt = Date.now() + remaining * 1000;
+
+  tickLoop();
 }
 
 function resetAll() {
   stopTimer();
   running = false;
+  paused = false;
+  phaseEndAt = 0;
+
   phase = "IDLE";
   currentRound = 0;
   remaining = 0;
   phaseDuration = 0;
+  cfgRun = null;
+
+  setInputsDisabled(false);
+
   setButtonsRunning(false);
   renderIdle();
 }
 
 function tickLoop() {
-  // Tick imediato para refletir UI no instante do start/continue
+  // sync imediato (para refletir correto ao voltar do background/continue)
+  syncRemainingFromClock();
   render();
 
+  if (timerId) clearInterval(timerId);
+
+  // tick mais frequente para compensar throttling, mas tempo exibido é em segundos
   timerId = setInterval(() => {
-    if (remaining <= 0) {
+    if (!running || paused) return;
+
+    const prev = remaining;
+    syncRemainingFromClock();
+
+    // últimos 3 segundos: sinal (evita disparar repetido no mesmo segundo)
+    if (remaining > 0 && remaining <= 3 && remaining !== prev) signal();
+
+    // se a aba ficou em background, pode "pular" várias fases
+    while (remaining <= 0 && running && !paused) {
       nextPhase();
-      render();
-      return;
+      if (phase === "DONE") return; // nextPhase já finaliza
+      syncRemainingFromClock();
     }
 
-    // últimos 3 segundos: sinal
-    if (remaining <= 3) signal();
-
-    remaining -= 1;
     render();
-  }, 1000);
+  }, 250);
+}
+
+function syncRemainingFromClock() {
+  if (phase === "IDLE" || phase === "DONE") {
+    remaining = 0;
+    return;
+  }
+  remaining = Math.max(0, Math.ceil((phaseEndAt - Date.now()) / 1000));
 }
 
 function nextPhase() {
@@ -181,6 +283,8 @@ function nextPhase() {
   if (phase === "DONE") {
     stopTimer();
     running = false;
+    paused = false;
+    setInputsDisabled(false);
     setButtonsRunning(false);
     renderDone();
   }
@@ -193,6 +297,7 @@ function enterPhase(newPhase) {
     currentRound += 1;
     remaining = getCfg().work;
     phaseDuration = remaining;
+    phaseEndAt = Date.now() + remaining * 1000;
     signalStrong();
     return;
   }
@@ -200,6 +305,7 @@ function enterPhase(newPhase) {
   if (phase === "WARMUP") {
     remaining = getCfg().warmup;
     phaseDuration = remaining;
+    phaseEndAt = Date.now() + remaining * 1000;
     signalStrong();
     return;
   }
@@ -207,6 +313,7 @@ function enterPhase(newPhase) {
   if (phase === "REST1") {
     remaining = getCfg().rest1;
     phaseDuration = remaining;
+    phaseEndAt = Date.now() + remaining * 1000;
     signalStrong();
     return;
   }
@@ -214,6 +321,7 @@ function enterPhase(newPhase) {
   if (phase === "REST2") {
     remaining = getCfg().rest2;
     phaseDuration = remaining;
+    phaseEndAt = Date.now() + remaining * 1000;
     signalStrong();
     return;
   }
@@ -221,6 +329,7 @@ function enterPhase(newPhase) {
   if (phase === "COOLDOWN") {
     remaining = getCfg().cooldown;
     phaseDuration = remaining;
+    phaseEndAt = Date.now() + remaining * 1000;
     signalStrong();
     return;
   }
@@ -228,13 +337,23 @@ function enterPhase(newPhase) {
   if (phase === "DONE") {
     remaining = 0;
     phaseDuration = 0;
+    phaseEndAt = 0;
     signalStrong();
+
+    // finaliza imediatamente
+    stopTimer();
+    running = false;
+    paused = false;
+    setInputsDisabled(false);
+    setButtonsRunning(false);
+    renderDone();
   }
 }
 
 function stopTimer() {
   if (timerId) clearInterval(timerId);
   timerId = null;
+  paused = false;
   btnPause.textContent = "Pausar";
 }
 
@@ -262,14 +381,17 @@ function renderDone() {
 
 function render() {
   outPhase.textContent = phaseLabel(phase);
-  outRound.textContent = (phase === "IDLE" || phase === "WARMUP" || phase === "COOLDOWN" || phase === "DONE")
-    ? `${Math.min(currentRound, totalRounds)}/${totalRounds}`
-    : `${currentRound}/${totalRounds}`;
+  outRound.textContent =
+    (phase === "IDLE" || phase === "WARMUP" || phase === "COOLDOWN" || phase === "DONE")
+      ? `${Math.min(currentRound, totalRounds)}/${totalRounds}`
+      : `${currentRound}/${totalRounds}`;
 
   outTime.textContent = formatMMSS(remaining);
 
-  // Progress
-  const pct = (phaseDuration > 0) ? Math.max(0, Math.min(100, ((phaseDuration - remaining) / phaseDuration) * 100)) : 0;
+  // Progress (baseado no remaining)
+  const pct = (phaseDuration > 0)
+    ? Math.max(0, Math.min(100, ((phaseDuration - remaining) / phaseDuration) * 100))
+    : 0;
   barFill.style.width = `${pct}%`;
 
   // Próximo
@@ -317,42 +439,44 @@ function formatMMSS(totalSeconds) {
 
 function signal() {
   const cfg = getCfg();
-  if (cfg.sound) beep(0.03, 720);
+  if (cfg.sound) beep(0.04, 1050);
   if (cfg.vibrate && navigator.vibrate) navigator.vibrate(40);
 }
 
 function signalStrong() {
   const cfg = getCfg();
   if (cfg.sound) {
-    beep(0.06, 520);
-    setTimeout(() => beep(0.06, 820), 90);
+    beep(0.08, 900);
+    setTimeout(() => beep(0.08, 1250), 90);
   }
-  if (cfg.vibrate && navigator.vibrate) navigator.vibrate([60, 40, 60]);
+  if (cfg.vibrate && navigator.vibrate) navigator.vibrate([70, 40, 70]);
 }
 
-/* Beep com WebAudio (sem dependências) */
+/* Beep com WebAudio (sem dependências) - reusando AudioContext */
 function beep(durationSec, frequency) {
   try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new AudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
+    initAudio();
+    if (!audioCtx || !masterGain) return;
+
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
 
     osc.type = "sine";
     osc.frequency.value = frequency;
 
-    gain.gain.value = 0.001;
-    gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + durationSec);
+    const now = audioCtx.currentTime;
+    const attack = 0.008;
+    const release = Math.max(0.02, durationSec);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.8, now + attack); // pico do beep (0.6 a 1.2)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + release);
 
     osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
+    gain.connect(masterGain);
 
-    setTimeout(() => {
-      osc.stop();
-      ctx.close();
-    }, Math.ceil(durationSec * 1000) + 40);
+    osc.start(now);
+    osc.stop(now + release + 0.02);
   } catch {
     // sem áudio (navegador pode bloquear sem interação)
   }
@@ -372,14 +496,14 @@ function readConfigFromUI() {
     vibrate: !!elVibrate.checked
   };
 
-  if (value.rounds < 1) return { ok:false, error:"Rounds deve ser >= 1" };
-  if (value.work < 1) return { ok:false, error:"Trabalho deve ser >= 1" };
+  if (value.rounds < 1) return { ok: false, error: "Rounds deve ser >= 1" };
+  if (value.work < 1) return { ok: false, error: "Trabalho deve ser >= 1" };
   if (value.warmup < 0 || value.rest1 < 0 || value.rest2 < 0 || value.cooldown < 0) {
-    return { ok:false, error:"Tempos não podem ser negativos." };
+    return { ok: false, error: "Tempos não podem ser negativos." };
   }
-  if (value.rest2Every < 0) return { ok:false, error:"rest2Every não pode ser negativo." };
+  if (value.rest2Every < 0) return { ok: false, error: "rest2Every não pode ser negativo." };
 
-  return { ok:true, value };
+  return { ok: true, value };
 }
 
 function applyConfig(cfg) {
@@ -387,6 +511,8 @@ function applyConfig(cfg) {
 }
 
 function getCfg() {
+  // durante execução, usa config congelada
+  if (running && cfgRun) return cfgRun;
   return readConfigFromUI().value;
 }
 
@@ -420,3 +546,4 @@ function loadConfig() {
     // ignora config inválida
   }
 }
+```
