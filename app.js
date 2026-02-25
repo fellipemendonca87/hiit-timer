@@ -1,6 +1,5 @@
 alert("app.js carregou (versão nova)");
 
-```js
 "use strict";
 
 /*
@@ -539,4 +538,5 @@ function loadConfig() {
   }
 }
 ```
+
 
