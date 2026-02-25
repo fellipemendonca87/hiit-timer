@@ -11,33 +11,65 @@
 
 const STORAGE_KEY = "hiit_config_v1";
 
-// Elements
-const elWarmup = document.getElementById("warmup");
-const elRounds = document.getElementById("rounds");
-const elWork = document.getElementById("work");
-const elRest1 = document.getElementById("rest1");
-const elRest2 = document.getElementById("rest2");
-const elRest2Every = document.getElementById("rest2Every");
-const elCooldown = document.getElementById("cooldown");
-const elSound = document.getElementById("sound");
-const elVibrate = document.getElementById("vibrate");
+// ===== Helpers de erro visível (sem console) =====
+function showFatal(msg) {
+  try {
+    const el = document.getElementById("next");
+    if (el) el.textContent = `Erro: ${msg}`;
+  } catch {}
+}
 
-const btnStart = document.getElementById("btnStart");
-const btnPause = document.getElementById("btnPause");
-const btnReset = document.getElementById("btnReset");
+window.addEventListener("error", (e) => {
+  const m = e?.message || "Erro desconhecido";
+  showFatal(m);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const m = e?.reason?.message || String(e?.reason || "Promise rejection");
+  showFatal(m);
+});
 
-const outPhase = document.getElementById("phase");
-const outRound = document.getElementById("round");
-const outTime = document.getElementById("time");
-const outNext = document.getElementById("next");
-const barFill = document.getElementById("barFill");
+// ===== Elements (com validação) =====
+function mustGet(id) {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`Elemento não encontrado: #${id}`);
+  return el;
+}
 
-// Timer state
+let elWarmup, elRounds, elWork, elRest1, elRest2, elRest2Every, elCooldown, elSound, elVibrate;
+let btnStart, btnPause, btnReset;
+let outPhase, outRound, outTime, outNext, barFill;
+
+try {
+  elWarmup = mustGet("warmup");
+  elRounds = mustGet("rounds");
+  elWork = mustGet("work");
+  elRest1 = mustGet("rest1");
+  elRest2 = mustGet("rest2");
+  elRest2Every = mustGet("rest2Every");
+  elCooldown = mustGet("cooldown");
+  elSound = mustGet("sound");
+  elVibrate = mustGet("vibrate");
+
+  btnStart = mustGet("btnStart");
+  btnPause = mustGet("btnPause");
+  btnReset = mustGet("btnReset");
+
+  outPhase = mustGet("phase");
+  outRound = mustGet("round");
+  outTime = mustGet("time");
+  outNext = mustGet("next");
+  barFill = mustGet("barFill");
+} catch (err) {
+  showFatal(err.message);
+  throw err; // para não continuar quebrado silenciosamente
+}
+
+// ===== Timer state =====
 let timerId = null;
 let running = false;
 let paused = false;
 
-// Timestamp-based timing (robusto em background)
+// Timestamp-based timing
 let phaseEndAt = 0; // ms timestamp quando a fase atual termina
 
 // Sequence state
@@ -52,9 +84,6 @@ let cfgRun = null;
 
 // =========================
 // AUDIO (iPhone-friendly)
-// - Reusa 1 AudioContext
-// - Resume no Start (gesto do usuário)
-// - Volume mais alto e consistente
 // =========================
 let audioCtx = null;
 let masterGain = null;
@@ -66,7 +95,7 @@ function initAudio() {
   if (!audioCtx) {
     audioCtx = new AudioCtx();
     masterGain = audioCtx.createGain();
-    masterGain.gain.value = 0.35; // VOLUME MASTER (0.25 a 0.60)
+    masterGain.gain.value = 0.35; // master volume (0.25 a 0.60)
     masterGain.connect(audioCtx.destination);
   }
 
@@ -80,9 +109,15 @@ loadConfig();
 renderIdle();
 
 // Events
-btnStart.addEventListener("click", start);
-btnPause.addEventListener("click", togglePause);
-btnReset.addEventListener("click", resetAll);
+btnStart.addEventListener("click", () => {
+  try { start(); } catch (e) { showFatal(e.message || String(e)); }
+});
+btnPause.addEventListener("click", () => {
+  try { togglePause(); } catch (e) { showFatal(e.message || String(e)); }
+});
+btnReset.addEventListener("click", () => {
+  try { resetAll(); } catch (e) { showFatal(e.message || String(e)); }
+});
 
 // Salva config somente quando NÃO está rodando (evita sujar config do treino)
 [
@@ -107,7 +142,7 @@ function start() {
     return;
   }
 
-  initAudio();       // garante áudio no iPhone (resume no gesto)
+  initAudio();        // garante áudio no iPhone
   cfgRun = cfg.value; // congela config do treino
   applyConfig(cfgRun);
 
@@ -130,7 +165,6 @@ function togglePause() {
   if (!running) return;
 
   if (!paused) {
-    // pausar
     paused = true;
 
     if (timerId) {
@@ -138,22 +172,16 @@ function togglePause() {
       timerId = null;
     }
 
-    // congela remaining baseado no tempo real
     remaining = Math.max(0, Math.ceil((phaseEndAt - Date.now()) / 1000));
-
     btnPause.textContent = "Continuar";
     outNext.textContent = "Pausado.";
     render();
     return;
   }
 
-  // continuar
   paused = false;
   btnPause.textContent = "Pausar";
-
-  // recalcula fim da fase a partir do remaining atual
   phaseEndAt = Date.now() + remaining * 1000;
-
   tickLoop();
 }
 
@@ -170,32 +198,27 @@ function resetAll() {
   cfgRun = null;
 
   setInputsDisabled(false);
-
   setButtonsRunning(false);
   renderIdle();
 }
 
 function tickLoop() {
-  // sync imediato (para refletir correto ao voltar do background/continue)
   syncRemainingFromClock();
   render();
 
   if (timerId) clearInterval(timerId);
 
-  // tick mais frequente para compensar throttling, mas tempo exibido é em segundos
   timerId = setInterval(() => {
     if (!running || paused) return;
 
     const prev = remaining;
     syncRemainingFromClock();
 
-    // últimos 3 segundos: sinal (evita disparar repetido no mesmo segundo)
     if (remaining > 0 && remaining <= 3 && remaining !== prev) signal();
 
-    // se a aba ficou em background, pode "pular" várias fases
     while (remaining <= 0 && running && !paused) {
       nextPhase();
-      if (phase === "DONE") return; // nextPhase já finaliza
+      if (phase === "DONE") return;
       syncRemainingFromClock();
     }
 
@@ -212,24 +235,19 @@ function syncRemainingFromClock() {
 }
 
 function nextPhase() {
-  // Ao encerrar WARMUP, entra em WORK round 1
   if (phase === "WARMUP") {
     phase = "WORK";
     enterPhase(phase);
     return;
   }
 
-  // WORK -> REST (se houver) ou próximo WORK
   if (phase === "WORK") {
-    // terminou um round
     if (currentRound >= totalRounds) {
-      // acabou todos os rounds -> COOLDOWN (se 0, DONE)
       phase = (getCfg().cooldown > 0) ? "COOLDOWN" : "DONE";
       enterPhase(phase);
       return;
     }
 
-    // decide REST2 (longo) ou REST1 (curto) ou sem descanso
     const cfg = getCfg();
     const shouldRest2 =
       cfg.rest2 > 0 &&
@@ -248,27 +266,23 @@ function nextPhase() {
       return;
     }
 
-    // sem descanso: próximo WORK
     phase = "WORK";
     enterPhase(phase);
     return;
   }
 
-  // REST1/REST2 -> WORK (próximo round)
   if (phase === "REST1" || phase === "REST2") {
     phase = "WORK";
     enterPhase(phase);
     return;
   }
 
-  // COOLDOWN -> DONE
   if (phase === "COOLDOWN") {
     phase = "DONE";
     enterPhase(phase);
     return;
   }
 
-  // DONE: para tudo
   if (phase === "DONE") {
     stopTimer();
     running = false;
@@ -329,7 +343,6 @@ function enterPhase(newPhase) {
     phaseEndAt = 0;
     signalStrong();
 
-    // finaliza imediatamente
     stopTimer();
     running = false;
     paused = false;
@@ -377,13 +390,11 @@ function render() {
 
   outTime.textContent = formatMMSS(remaining);
 
-  // Progress (baseado no remaining)
   const pct = (phaseDuration > 0)
     ? Math.max(0, Math.min(100, ((phaseDuration - remaining) / phaseDuration) * 100))
     : 0;
   barFill.style.width = `${pct}%`;
 
-  // Próximo
   outNext.textContent = buildNextText();
 }
 
@@ -441,7 +452,6 @@ function signalStrong() {
   if (cfg.vibrate && navigator.vibrate) navigator.vibrate([70, 40, 70]);
 }
 
-/* Beep com WebAudio (sem dependências) - reusando AudioContext */
 function beep(durationSec, frequency) {
   try {
     initAudio();
@@ -458,7 +468,7 @@ function beep(durationSec, frequency) {
     const release = Math.max(0.02, durationSec);
 
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.8, now + attack); // pico do beep (0.6 a 1.2)
+    gain.gain.exponentialRampToValueAtTime(0.8, now + attack);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + release);
 
     osc.connect(gain);
@@ -467,7 +477,7 @@ function beep(durationSec, frequency) {
     osc.start(now);
     osc.stop(now + release + 0.02);
   } catch {
-    // sem áudio (navegador pode bloquear sem interação)
+    // ignore
   }
 }
 
@@ -500,7 +510,6 @@ function applyConfig(cfg) {
 }
 
 function getCfg() {
-  // durante execução, usa config congelada
   if (running && cfgRun) return cfgRun;
   return readConfigFromUI().value;
 }
@@ -532,10 +541,6 @@ function loadConfig() {
     if (typeof cfg.sound === "boolean") elSound.checked = cfg.sound;
     if (typeof cfg.vibrate === "boolean") elVibrate.checked = cfg.vibrate;
   } catch {
-    // ignora config inválida
+    // ignore
   }
 }
-```
-
-
-
